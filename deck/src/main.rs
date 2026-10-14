@@ -1,7 +1,7 @@
 slint::include_modules!();
 
 use crate::app_state::{AppState, ConnState};
-use crate::commands::Command;
+use crate::commands::{Command, ParamKind};
 use crate::config::{load_config, save_config, Config};
 use crate::diagnostics::Diagnostics;
 use crate::osc::client::OscClient;
@@ -10,13 +10,14 @@ use crate::osc::receiver::OscReceiver;
 use chrono::Utc;
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod app_state;
 mod commands;
@@ -25,14 +26,18 @@ mod diagnostics;
 mod logging;
 mod osc;
 
-fn parse_steps(s: &str) -> Vec<i32> {
-    s.split(',')
-        .filter_map(|x| x.trim().parse::<i32>().ok())
-        .collect()
-}
-
 /// How long without a heartbeat before the connection is shown as stale.
 const STALE_AFTER_SECS: i64 = 3;
+
+/// Parameter changes are coalesced for this long before an OSC message is sent,
+/// so dragging a slider does not flood the server.
+const PARAM_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// Default slider positions, chosen to match the server's config defaults.
+const DEFAULT_GUIDANCE: f32 = 1.0;
+const DEFAULT_DELTA: f32 = 1.0;
+const DEFAULT_MAXFPS: f32 = 4.0;
+const DEFAULT_STEP_INDEX: f32 = 17.0;
 
 fn main() -> anyhow::Result<()> {
     let _log_guard = crate::logging::init()?;
@@ -47,6 +52,8 @@ fn main() -> anyhow::Result<()> {
     let state = Rc::new(RefCell::new(AppState::default()));
     let diag = Rc::new(RefCell::new(Diagnostics::default()));
     let fullscreen = Arc::new(AtomicBool::new(cfg.fullscreen));
+    let pending: Rc<RefCell<HashMap<ParamKind, (f64, Instant)>>> =
+        Rc::new(RefCell::new(HashMap::new()));
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
     let (osc_tx, osc_rx) = mpsc::channel::<OscIn>();
@@ -101,6 +108,7 @@ fn main() -> anyhow::Result<()> {
     let state_t = state.clone();
     let diag_t = diag.clone();
     let fs_t = fullscreen.clone();
+    let pending_t = pending.clone();
     let client = Rc::new(client);
     let client_t = client.clone();
 
@@ -111,7 +119,7 @@ fn main() -> anyhow::Result<()> {
         };
 
         while let Ok(cmd) = cmd_rx.try_recv() {
-            handle_command(&client_t, &state_t, cmd);
+            handle_command(&client_t, &state_t, &pending_t, cmd);
         }
         while let Ok(ev) = osc_rx.try_recv() {
             handle_event(&state_t, &diag_t, ev);
@@ -119,6 +127,8 @@ fn main() -> anyhow::Result<()> {
         while let Ok(log) = log_rx.try_recv() {
             diag_t.borrow_mut().add_sent(log);
         }
+
+        flush_pending_params(&client_t, &state_t, &pending_t);
 
         update_ui(&window, &state_t, &diag_t, &fs_t);
     });
@@ -145,18 +155,10 @@ fn init_window(window: &MainWindow, cfg: &Config, state: &AppState) {
     window.set_prompt(state.prompt.clone().into());
     window.set_negative_prompt(state.negative_prompt.clone().into());
     window.set_seed_str(state.seed.to_string().into());
-    window.set_guidance_str(state.guidance.to_string().into());
-    window.set_delta_str(state.delta.to_string().into());
-    window.set_maxfps_str(state.maxfps.to_string().into());
-    window.set_steps_str(
-        state
-            .steps
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-            .into(),
-    );
+    window.set_guidance(DEFAULT_GUIDANCE);
+    window.set_delta(DEFAULT_DELTA);
+    window.set_maxfps(DEFAULT_MAXFPS);
+    window.set_steps(DEFAULT_STEP_INDEX);
     window.set_input_text(state.input_text.clone().into());
     window.set_errors(String::new().into());
     window.set_sent_log(String::new().into());
@@ -167,7 +169,12 @@ fn init_window(window: &MainWindow, cfg: &Config, state: &AppState) {
     window.set_last_heartbeat("Never".into());
 }
 
-fn handle_command(client: &OscClient, state: &Rc<RefCell<AppState>>, cmd: Command) {
+fn handle_command(
+    client: &OscClient,
+    state: &Rc<RefCell<AppState>>,
+    pending: &Rc<RefCell<HashMap<ParamKind, (f64, Instant)>>>,
+    cmd: Command,
+) {
     tracing::debug!(?cmd, "dispatching command");
     match cmd {
         Command::Play => client.send(protocol::encode_play()),
@@ -181,30 +188,73 @@ fn handle_command(client: &OscClient, state: &Rc<RefCell<AppState>>, cmd: Comman
             client.send(protocol::encode_prompt(&prompt));
             client.send(protocol::encode_negative(&negative));
         }
-        Command::ApplyParams {
-            seed,
-            guidance,
-            delta,
-            maxfps,
-            steps,
-        } => {
-            {
-                let mut s = state.borrow_mut();
-                s.seed = seed;
-                s.guidance = guidance;
-                s.delta = delta;
-                s.maxfps = maxfps;
-                s.steps = steps.clone();
-            }
-            client.send(protocol::encode_seed(seed));
-            client.send(protocol::encode_guidance(guidance));
-            client.send(protocol::encode_delta(delta));
-            client.send(protocol::encode_maxfps(maxfps));
-            client.send(protocol::encode_steps(&steps));
-        }
         Command::ApplyInput { name } => {
             state.borrow_mut().input_text = name.clone();
             client.send(protocol::encode_input(&name));
+        }
+        Command::SetParam { kind, value } => {
+            // Only remember the latest value; the timer sends it once the user
+            // stops moving the control.
+            pending.borrow_mut().insert(kind, (value, Instant::now()));
+        }
+    }
+}
+
+/// Send any parameter whose debounce window has elapsed.
+fn flush_pending_params(
+    client: &OscClient,
+    state: &Rc<RefCell<AppState>>,
+    pending: &Rc<RefCell<HashMap<ParamKind, (f64, Instant)>>>,
+) {
+    for (kind, value) in take_due(pending, Instant::now(), PARAM_DEBOUNCE) {
+        send_param(client, state, kind, value);
+    }
+}
+
+/// Remove and return the parameters whose last change is older than `debounce`.
+fn take_due(
+    pending: &Rc<RefCell<HashMap<ParamKind, (f64, Instant)>>>,
+    now: Instant,
+    debounce: Duration,
+) -> Vec<(ParamKind, f64)> {
+    let mut pending = pending.borrow_mut();
+    let due: Vec<(ParamKind, f64)> = pending
+        .iter()
+        .filter(|(_, (_, t))| now.duration_since(*t) >= debounce)
+        .map(|(k, (v, _))| (*k, *v))
+        .collect();
+    for (kind, _) in &due {
+        pending.remove(kind);
+    }
+    due
+}
+
+fn send_param(client: &OscClient, state: &Rc<RefCell<AppState>>, kind: ParamKind, value: f64) {
+    match kind {
+        ParamKind::Seed => {
+            let v = value.round() as i32;
+            state.borrow_mut().seed = v;
+            client.send(protocol::encode_seed(v));
+        }
+        ParamKind::Guidance => {
+            let v = value as f32;
+            state.borrow_mut().guidance = v;
+            client.send(protocol::encode_guidance(v));
+        }
+        ParamKind::Delta => {
+            let v = value as f32;
+            state.borrow_mut().delta = v;
+            client.send(protocol::encode_delta(v));
+        }
+        ParamKind::Maxfps => {
+            let v = value.round() as i32;
+            state.borrow_mut().maxfps = v;
+            client.send(protocol::encode_maxfps(v));
+        }
+        ParamKind::Steps => {
+            let v = value.round() as i32;
+            state.borrow_mut().steps = vec![v];
+            client.send(protocol::encode_steps(&[v]));
         }
     }
 }
@@ -315,18 +365,21 @@ fn setup_callbacks(window: &MainWindow, tx: mpsc::Sender<Command>, fullscreen: A
         });
     });
     let tx_c = tx.clone();
-    window.on_apply_params(move |s, g, d, m, st| {
-        let seed = s.parse::<i32>().unwrap_or(-1);
-        let guidance = g.parse::<f32>().unwrap_or(1.0);
-        let delta = d.parse::<f32>().unwrap_or(1.0);
-        let maxfps = m.parse::<i32>().unwrap_or(60);
-        let steps = parse_steps(&st);
-        let _ = tx_c.send(Command::ApplyParams {
-            seed,
-            guidance,
-            delta,
-            maxfps,
-            steps,
+    window.on_param_changed(move |kind, value| {
+        let kind = match kind.as_str() {
+            "seed" => ParamKind::Seed,
+            "guidance" => ParamKind::Guidance,
+            "delta" => ParamKind::Delta,
+            "maxfps" => ParamKind::Maxfps,
+            "steps" => ParamKind::Steps,
+            other => {
+                tracing::warn!(kind = %other, "unknown parameter from UI");
+                return;
+            }
+        };
+        let _ = tx_c.send(Command::SetParam {
+            kind,
+            value: value as f64,
         });
     });
     let tx_c = tx.clone();
@@ -352,23 +405,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_steps_single() {
-        assert_eq!(parse_steps("17"), vec![17]);
+    fn stale_before_heartbeat_secs_is_sane() {
+        assert!(STALE_AFTER_SECS >= 2);
     }
 
     #[test]
-    fn parse_steps_multiple_with_whitespace() {
-        assert_eq!(parse_steps("17, 23,31"), vec![17, 23, 31]);
+    fn take_due_only_returns_debounced_entries() {
+        let now = Instant::now();
+        let pending = Rc::new(RefCell::new(HashMap::new()));
+        pending
+            .borrow_mut()
+            .insert(ParamKind::Guidance, (2.0, now - Duration::from_millis(500)));
+        pending.borrow_mut().insert(ParamKind::Delta, (1.5, now));
+
+        let due = take_due(&pending, now, Duration::from_millis(300));
+        assert_eq!(due, vec![(ParamKind::Guidance, 2.0)]);
+        // Delta is still pending; guidance was consumed.
+        assert!(!pending.borrow().contains_key(&ParamKind::Guidance));
+        assert!(pending.borrow().contains_key(&ParamKind::Delta));
     }
 
     #[test]
-    fn parse_steps_ignores_invalid_entries() {
-        assert_eq!(parse_steps("17, abc, 31"), vec![17, 31]);
+    fn take_due_keeps_latest_value() {
+        let now = Instant::now();
+        let pending = Rc::new(RefCell::new(HashMap::new()));
+        pending
+            .borrow_mut()
+            .insert(ParamKind::Maxfps, (10.0, now - Duration::from_secs(1)));
+        pending.borrow_mut().insert(ParamKind::Maxfps, (20.0, now));
+
+        // The most recent value replaces the earlier one and resets the timer.
+        let due = take_due(&pending, now, Duration::from_millis(300));
+        assert!(due.is_empty());
+        assert_eq!(pending.borrow().get(&ParamKind::Maxfps).unwrap().0, 20.0);
     }
 
     #[test]
-    fn parse_steps_empty_is_empty() {
-        assert!(parse_steps("").is_empty());
-        assert!(parse_steps("  ").is_empty());
+    fn flush_sends_debounced_param_over_udp() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let target = server.local_addr().unwrap();
+
+        let client_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let (log_tx, _log_rx) = mpsc::channel();
+        let client = OscClient::new(client_sock, target, log_tx);
+
+        let state = Rc::new(RefCell::new(AppState::default()));
+        let pending = Rc::new(RefCell::new(HashMap::new()));
+        pending.borrow_mut().insert(
+            ParamKind::Guidance,
+            (2.5, Instant::now() - Duration::from_millis(400)),
+        );
+
+        flush_pending_params(&client, &state, &pending);
+
+        let mut buf = [0u8; 1024];
+        let (n, _) = server.recv_from(&mut buf).unwrap();
+        let (_, packet) = rosc::decoder::decode_udp(&buf[..n]).unwrap();
+        match packet {
+            rosc::OscPacket::Message(m) => {
+                assert_eq!(m.addr, "/guidance");
+                assert_eq!(m.args, vec![rosc::OscType::Float(2.5)]);
+            }
+            other => panic!("expected a message, got {other:?}"),
+        }
+
+        // State reflects the (desired) value that was just sent.
+        assert!((state.borrow().guidance - 2.5).abs() < 1e-6);
+        // Nothing left pending.
+        assert!(pending.borrow().is_empty());
     }
 }

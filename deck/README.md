@@ -11,7 +11,13 @@ the generated NDI video; monitor that in an external NDI-capable application.
 
 Implemented:
 
-- OSC control of prompts, seed, guidance, delta, maxfps, and timestep indices.
+- OSC control of prompts, seed, guidance, delta, maxfps, and timestep index.
+- Generation parameters are live sliders (no Apply button): moving one sends
+  the value automatically after a 300 ms debounce, so dragging does not flood
+  the server. Ranges: Guidance `0.0–5.0` (step `0.1`), Delta `0.0–2.0`
+  (step `0.1`), Max FPS `1–30` (step `1`), Step index `0–49` (step `1`;
+  single value, matching the server's current one-entry `steps` config).
+  Seed stays a text field (`-1` = random each frame) and is also debounced.
 - Transport: Play, Pause, Stop, Unload.
 - Input selection by exact NDI source name via the existing `/input` message.
 - Telemetry display: heartbeat, FPS, frame count, output name, confirmed input.

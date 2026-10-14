@@ -1,3 +1,12 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamKind {
+    Seed,
+    Guidance,
+    Delta,
+    Maxfps,
+    Steps,
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
     Play,
@@ -8,14 +17,12 @@ pub enum Command {
         prompt: String,
         negative: String,
     },
-    ApplyParams {
-        seed: i32,
-        guidance: f32,
-        delta: f32,
-        maxfps: i32,
-        steps: Vec<i32>,
-    },
     ApplyInput {
         name: String,
+    },
+    /// A slider/text edit produced a new value. Debounced before sending.
+    SetParam {
+        kind: ParamKind,
+        value: f64,
     },
 }

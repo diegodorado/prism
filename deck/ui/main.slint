@@ -1,4 +1,4 @@
-import { VerticalBox, HorizontalBox, TextEdit, LineEdit, Button, ScrollView } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, TextEdit, LineEdit, Button, ScrollView, Slider } from "std-widgets.slint";
 
 component ConnectionStatus {
     in property <string> status;
@@ -68,22 +68,79 @@ component PromptControls {
 
 component ParamControls {
     in-out property <string> seed-str;
-    in-out property <string> guidance-str;
-    in-out property <string> delta-str;
-    in-out property <string> maxfps-str;
-    in-out property <string> steps-str;
-    callback apply-params(string, string, string, string, string);
+    in-out property <float> guidance;
+    in-out property <float> delta;
+    in-out property <float> maxfps;
+    in-out property <float> steps;
+    callback adjust(string, float);
 
     VerticalBox {
-        spacing: 4px;
+        spacing: 6px;
         padding: 4px;
         Text { text: "GENERATION PARAMETERS"; font-weight: 700; }
-        HorizontalBox { Text { text: "Seed (-1 random):"; } LineEdit { text: seed-str; edited(text) => { seed-str = text; } } }
-        HorizontalBox { Text { text: "Guidance:"; } LineEdit { text: guidance-str; edited(text) => { guidance-str = text; } } }
-        HorizontalBox { Text { text: "Delta:"; } LineEdit { text: delta-str; edited(text) => { delta-str = text; } } }
-        HorizontalBox { Text { text: "Max FPS:"; } LineEdit { text: maxfps-str; edited(text) => { maxfps-str = text; } } }
-        HorizontalBox { Text { text: "Steps (comma sep):"; } LineEdit { text: steps-str; edited(text) => { steps-str = text; } } }
-        Button { text: "Apply Params"; clicked => { apply-params(seed-str, guidance-str, delta-str, maxfps-str, steps-str); } }
+        Text { text: "Changes apply automatically (debounced)."; font-size: 11px; color: #999999; }
+
+        HorizontalBox {
+            spacing: 6px;
+            Text { text: "Seed"; width: 90px; vertical-alignment: center; }
+            LineEdit {
+                text: seed-str;
+                edited(text) => { seed-str = text; root.adjust("seed", seed-str.to-float()); }
+            }
+            Text { text: "-1 = random each frame"; font-size: 11px; color: #999999; vertical-alignment: center; }
+        }
+
+        HorizontalBox {
+            spacing: 6px;
+            Text { text: "Guidance"; width: 90px; vertical-alignment: center; }
+            Slider {
+                minimum: 0.0;
+                maximum: 5.0;
+                step: 0.1;
+                value <=> root.guidance;
+                changed => { root.adjust("guidance", root.guidance); }
+            }
+            Text { text: "\{Math.round(root.guidance * 10) / 10.0}"; width: 40px; horizontal-alignment: right; vertical-alignment: center; }
+        }
+
+        HorizontalBox {
+            spacing: 6px;
+            Text { text: "Delta"; width: 90px; vertical-alignment: center; }
+            Slider {
+                minimum: 0.0;
+                maximum: 2.0;
+                step: 0.1;
+                value <=> root.delta;
+                changed => { root.adjust("delta", root.delta); }
+            }
+            Text { text: "\{Math.round(root.delta * 10) / 10.0}"; width: 40px; horizontal-alignment: right; vertical-alignment: center; }
+        }
+
+        HorizontalBox {
+            spacing: 6px;
+            Text { text: "Max FPS"; width: 90px; vertical-alignment: center; }
+            Slider {
+                minimum: 1.0;
+                maximum: 30.0;
+                step: 1.0;
+                value <=> root.maxfps;
+                changed => { root.adjust("maxfps", root.maxfps); }
+            }
+            Text { text: "\{Math.round(root.maxfps)}"; width: 40px; horizontal-alignment: right; vertical-alignment: center; }
+        }
+
+        HorizontalBox {
+            spacing: 6px;
+            Text { text: "Step index"; width: 90px; vertical-alignment: center; }
+            Slider {
+                minimum: 0.0;
+                maximum: 49.0;
+                step: 1.0;
+                value <=> root.steps;
+                changed => { root.adjust("steps", root.steps); }
+            }
+            Text { text: "\{Math.round(root.steps)}"; width: 40px; horizontal-alignment: right; vertical-alignment: center; }
+        }
     }
 }
 
@@ -132,10 +189,10 @@ export component MainWindow inherits Window {
     in-out property <string> prompt;
     in-out property <string> negative-prompt;
     in-out property <string> seed-str;
-    in-out property <string> guidance-str;
-    in-out property <string> delta-str;
-    in-out property <string> maxfps-str;
-    in-out property <string> steps-str;
+    in-out property <float> guidance;
+    in-out property <float> delta;
+    in-out property <float> maxfps;
+    in-out property <float> steps;
     in-out property <string> input-text;
     in property <string> errors;
     in property <string> sent-log;
@@ -145,7 +202,7 @@ export component MainWindow inherits Window {
     callback stop();
     callback unload();
     callback apply-prompts(string, string);
-    callback apply-params(string, string, string, string, string);
+    callback param-changed(string, float);
     callback apply-input(string);
     callback toggle-fullscreen();
 
@@ -169,7 +226,7 @@ export component MainWindow inherits Window {
                 ConnectionStatus { status: status; host: host; server-port: server-port; local-port: local-port; fps: fps; frames: frames; output-name: output-name; confirmed-input: confirmed-input; last-heartbeat: last-heartbeat; }
                 TransportControls { play => { play(); } pause => { pause(); } stop => { confirm-kind = "stop"; } unload => { confirm-kind = "unload"; } }
                 PromptControls { prompt-txt: prompt; negative-txt: negative-prompt; apply-prompts(pp,np) => { apply-prompts(pp,np); } }
-                ParamControls { seed-str: seed-str; guidance-str: guidance-str; delta-str: delta-str; maxfps-str: maxfps-str; steps-str: steps-str; apply-params(s,g,d,m,st) => { apply-params(s,g,d,m,st); } }
+                ParamControls { seed-str <=> seed-str; guidance <=> guidance; delta <=> delta; maxfps <=> maxfps; steps <=> steps; adjust(k,v) => { param-changed(k, v); } }
                 InputControl { input-str: input-text; confirmed-input: confirmed-input; apply-input(it) => { apply-input(it); } }
                 Diagnostics { errors: errors; sent-log: sent-log; }
             }
