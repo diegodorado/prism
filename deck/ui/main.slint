@@ -1,0 +1,224 @@
+import { VerticalBox, HorizontalBox, TextEdit, LineEdit, Button, ScrollView } from "std-widgets.slint";
+
+component ConnectionStatus {
+    in property <string> status;
+    in property <string> host;
+    in property <int> server-port;
+    in property <int> local-port;
+    in property <float> fps;
+    in property <int> frames;
+    in property <string> output-name;
+    in property <string> confirmed-input;
+    in property <string> last-heartbeat;
+
+    VerticalBox {
+        spacing: 4px;
+        padding: 4px;
+        Text { text: "CONNECTION / STATUS"; font-weight: 700; }
+        HorizontalBox { Text { text: "Status:"; } Text { text: status; } }
+        HorizontalBox { Text { text: "Server:"; } Text { text: host + ":" + server-port; } }
+        HorizontalBox { Text { text: "Local Port:"; } Text { text: local-port; } }
+        HorizontalBox { Text { text: "Output:"; } Text { text: output-name; } }
+        HorizontalBox { Text { text: "Confirmed Input:"; } Text { text: confirmed-input; } }
+        HorizontalBox { Text { text: "FPS:"; } Text { text: fps; } }
+        HorizontalBox { Text { text: "Frames:"; } Text { text: frames; } }
+        HorizontalBox { Text { text: "Last Heartbeat:"; } Text { text: last-heartbeat; } }
+    }
+}
+
+component TransportControls {
+    callback play();
+    callback pause();
+    callback stop();
+    callback unload();
+
+    VerticalBox {
+        spacing: 4px;
+        padding: 4px;
+        Text { text: "TRANSPORT"; font-weight: 700; }
+        HorizontalBox {
+            spacing: 4px;
+            Button { text: "Play"; clicked => { play(); } }
+            Button { text: "Pause"; clicked => { pause(); } }
+        }
+        HorizontalBox {
+            spacing: 4px;
+            Button { text: "Stop (confirm)"; clicked => { stop(); } }
+            Button { text: "Unload (confirm)"; clicked => { unload(); } }
+        }
+    }
+}
+
+component PromptControls {
+    in-out property <string> prompt-txt;
+    in-out property <string> negative-txt;
+    callback apply-prompts(string, string);
+
+    VerticalBox {
+        spacing: 4px;
+        padding: 4px;
+        Text { text: "PROMPTS"; font-weight: 700; }
+        Text { text: "Positive"; }
+        TextEdit { text: prompt-txt; edited(text) => { prompt-txt = text; } height: 80px; }
+        Text { text: "Negative"; }
+        TextEdit { text: negative-txt; edited(text) => { negative-txt = text; } height: 60px; }
+        Button { text: "Apply Prompts"; clicked => { apply-prompts(prompt-txt, negative-txt); } }
+    }
+}
+
+component ParamControls {
+    in-out property <string> seed-str;
+    in-out property <string> guidance-str;
+    in-out property <string> delta-str;
+    in-out property <string> maxfps-str;
+    in-out property <string> steps-str;
+    callback apply-params(string, string, string, string, string);
+
+    VerticalBox {
+        spacing: 4px;
+        padding: 4px;
+        Text { text: "GENERATION PARAMETERS"; font-weight: 700; }
+        HorizontalBox { Text { text: "Seed (-1 random):"; } LineEdit { text: seed-str; edited(text) => { seed-str = text; } } }
+        HorizontalBox { Text { text: "Guidance:"; } LineEdit { text: guidance-str; edited(text) => { guidance-str = text; } } }
+        HorizontalBox { Text { text: "Delta:"; } LineEdit { text: delta-str; edited(text) => { delta-str = text; } } }
+        HorizontalBox { Text { text: "Max FPS:"; } LineEdit { text: maxfps-str; edited(text) => { maxfps-str = text; } } }
+        HorizontalBox { Text { text: "Steps (comma sep):"; } LineEdit { text: steps-str; edited(text) => { steps-str = text; } } }
+        Button { text: "Apply Params"; clicked => { apply-params(seed-str, guidance-str, delta-str, maxfps-str, steps-str); } }
+    }
+}
+
+component InputControl {
+    in-out property <string> input-str;
+    in property <string> confirmed-input;
+    callback apply-input(string);
+
+    VerticalBox {
+        spacing: 4px;
+        padding: 4px;
+        Text { text: "INPUT (NDI SOURCE NAME)"; font-weight: 700; }
+        HorizontalBox { Text { text: "Source:"; } LineEdit { text: input-str; edited(text) => { input-str = text; } } }
+        Button { text: "Apply Input"; clicked => { apply-input(input-str); } }
+        Text { text: "Confirmed: " + confirmed-input; }
+    }
+}
+
+component Diagnostics {
+    in property <string> errors;
+    in property <string> sent-log;
+
+    VerticalBox {
+        spacing: 4px;
+        padding: 4px;
+        Text { text: "DIAGNOSTICS"; font-weight: 700; }
+        Text { text: "Errors (/error):"; }
+        TextEdit { text: errors; read-only: true; height: 80px; }
+        Text { text: "Sent Log (optional):"; }
+        TextEdit { text: sent-log; read-only: true; height: 60px; }
+    }
+}
+
+export component MainWindow inherits Window {
+    in property <bool> fullscreen;
+    in-out property <string> confirm-kind: "";
+    in property <string> status;
+    in property <string> host;
+    in property <int> server-port;
+    in property <int> local-port;
+    in property <float> fps;
+    in property <int> frames;
+    in property <string> output-name;
+    in property <string> confirmed-input;
+    in property <string> last-heartbeat;
+    in-out property <string> prompt;
+    in-out property <string> negative-prompt;
+    in-out property <string> seed-str;
+    in-out property <string> guidance-str;
+    in-out property <string> delta-str;
+    in-out property <string> maxfps-str;
+    in-out property <string> steps-str;
+    in-out property <string> input-text;
+    in property <string> errors;
+    in property <string> sent-log;
+
+    callback play();
+    callback pause();
+    callback stop();
+    callback unload();
+    callback apply-prompts(string, string);
+    callback apply-params(string, string, string, string, string);
+    callback apply-input(string);
+    callback toggle-fullscreen();
+
+    title: "Prism Deck";
+    preferred-width: 820px;
+    preferred-height: 900px;
+    min-width: 560px;
+    min-height: 420px;
+
+    VerticalBox {
+        spacing: 0px;
+        HorizontalBox {
+            alignment: start;
+            padding: 8px;
+            Button { text: fullscreen ? "Exit Fullscreen" : "Fullscreen"; clicked => { toggle-fullscreen(); } }
+        }
+        ScrollView {
+            VerticalBox {
+                spacing: 6px;
+                padding: 8px;
+                ConnectionStatus { status: status; host: host; server-port: server-port; local-port: local-port; fps: fps; frames: frames; output-name: output-name; confirmed-input: confirmed-input; last-heartbeat: last-heartbeat; }
+                TransportControls { play => { play(); } pause => { pause(); } stop => { confirm-kind = "stop"; } unload => { confirm-kind = "unload"; } }
+                PromptControls { prompt-txt: prompt; negative-txt: negative-prompt; apply-prompts(pp,np) => { apply-prompts(pp,np); } }
+                ParamControls { seed-str: seed-str; guidance-str: guidance-str; delta-str: delta-str; maxfps-str: maxfps-str; steps-str: steps-str; apply-params(s,g,d,m,st) => { apply-params(s,g,d,m,st); } }
+                InputControl { input-str: input-text; confirmed-input: confirmed-input; apply-input(it) => { apply-input(it); } }
+                Diagnostics { errors: errors; sent-log: sent-log; }
+            }
+        }
+    }
+
+    // Confirmation overlay for destructive actions (Stop / Unload).
+    Rectangle {
+        visible: confirm-kind != "";
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: #000000;
+        opacity: 0.55;
+
+        Rectangle {
+            width: 360px;
+            height: 150px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #2a2a2a;
+            border-color: #555555;
+            border-width: 1px;
+            border-radius: 6px;
+
+            VerticalBox {
+                spacing: 8px;
+                padding: 16px;
+                Text {
+                    text: confirm-kind == "stop"
+                        ? "Stop Prism Server?"
+                        : "Unload the model and free VRAM?";
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                HorizontalBox {
+                    alignment: center;
+                    spacing: 8px;
+                    Button {
+                        text: "Confirm";
+                        clicked => {
+                            if (confirm-kind == "stop") { stop(); } else { unload(); }
+                            confirm-kind = "";
+                        }
+                    }
+                    Button { text: "Cancel"; clicked => { confirm-kind = ""; } }
+                }
+            }
+        }
+    }
+}

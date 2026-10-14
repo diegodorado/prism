@@ -19,3 +19,6 @@ engines/
 
 # HF / runtime caches
 *.log
+
+# Rust / Prism Deck
+target/

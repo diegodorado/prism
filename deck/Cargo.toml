@@ -1,0 +1,22 @@
+[package]
+name = "prism-deck"
+version = "0.1.0"
+edition = "2021"
+authors = ["Prism"]
+description = "Native desktop controller for Prism Server over OSC"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5.0"
+rosc = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+slint = "1.7"
+toml = "0.8"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+slint-build = "1.7"
