@@ -1,0 +1,21 @@
+# Virtual environments
+.venv/
+venv/
+venv_old/
+*.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Model weights / build artifacts
+engines/
+*.safetensors
+*.ckpt
+*.pth
+*.onnx
+
+# HF / runtime caches
+*.log

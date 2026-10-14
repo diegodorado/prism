@@ -1,0 +1,29 @@
+# StreamDiffusion server — headless Linux / NVIDIA (proven working set)
+# Installed with `uv pip install` into StreamDiffusion/.venv (CPython 3.11).
+# Torch/xformers wheels come from the cu121 index; everything else from PyPI.
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+torch==2.1.0+cu121
+torchvision==0.16.0+cu121
+xformers==0.0.22.post7
+
+diffusers==0.24.0
+transformers==4.48.3
+tokenizers==0.21.4
+accelerate==1.12.0
+huggingface-hub==0.24.6
+peft==0.12.0
+
+numpy==1.26.4
+opencv-python==4.11.0.86
+Pillow==12.0.0
+fire==0.7.1
+mss==10.1.0
+matplotlib==3.10.8
+einops==0.8.2
+python-osc==1.9.3
+omegaconf==2.3.0
+safetensors==0.7.0
+
+# NDI bindings (bundles libndi.so; provides the `NDIlib` module server/ndi.py imports)
+ndi-python==6.3.2.5

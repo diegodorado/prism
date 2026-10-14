@@ -1,0 +1,11 @@
+{
+    "model": "stabilityai/sd-turbo",
+    "width": 512,
+    "height": 512,
+    "seed": 574411,
+    "steps": [17],
+    "guidance": 1.0,
+    "delta": 1.0,
+    "maxfps": 4,
+    "output": "StreamDiffusion"
+}
