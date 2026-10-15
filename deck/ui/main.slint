@@ -52,22 +52,22 @@ component TransportControls {
 component PromptControls {
     in-out property <string> prompt-txt;
     in-out property <string> negative-txt;
-    callback apply-prompts(string, string);
+    callback edit-text(string, string);
 
     VerticalBox {
         spacing: 4px;
         padding: 4px;
         Text { text: "PROMPTS"; font-weight: 700; }
+        Text { text: "Changes apply automatically (debounced)."; font-size: 11px; color: #999999; }
         Text { text: "Positive"; }
-        TextEdit { text: prompt-txt; edited(text) => { prompt-txt = text; } height: 80px; }
+        TextEdit { text: prompt-txt; edited(text) => { prompt-txt = text; root.edit-text("prompt", text); } height: 80px; }
         Text { text: "Negative"; }
-        TextEdit { text: negative-txt; edited(text) => { negative-txt = text; } height: 60px; }
-        Button { text: "Apply Prompts"; clicked => { apply-prompts(prompt-txt, negative-txt); } }
+        TextEdit { text: negative-txt; edited(text) => { negative-txt = text; root.edit-text("negative", text); } height: 60px; }
     }
 }
 
 component ParamControls {
-    in-out property <string> seed-str;
+    in-out property <float> seed;
     in-out property <float> guidance;
     in-out property <float> delta;
     in-out property <float> maxfps;
@@ -83,11 +83,15 @@ component ParamControls {
         HorizontalBox {
             spacing: 6px;
             Text { text: "Seed"; width: 90px; vertical-alignment: center; }
-            LineEdit {
-                text: seed-str;
-                edited(text) => { seed-str = text; root.adjust("seed", seed-str.to-float()); }
+            Slider {
+                minimum: -1.0;
+                maximum: 300.0;
+                step: 1.0;
+                value <=> root.seed;
+                changed => { root.adjust("seed", root.seed); }
             }
-            Text { text: "-1 = random each frame"; font-size: 11px; color: #999999; vertical-alignment: center; }
+            Text { text: "\{Math.round(root.seed)}"; width: 40px; horizontal-alignment: right; vertical-alignment: center; }
+            Text { text: "-1 = random"; font-size: 11px; color: #999999; vertical-alignment: center; }
         }
 
         HorizontalBox {
@@ -95,7 +99,7 @@ component ParamControls {
             Text { text: "Guidance"; width: 90px; vertical-alignment: center; }
             Slider {
                 minimum: 0.0;
-                maximum: 5.0;
+                maximum: 1.5;
                 step: 0.1;
                 value <=> root.guidance;
                 changed => { root.adjust("guidance", root.guidance); }
@@ -188,7 +192,7 @@ export component MainWindow inherits Window {
     in property <string> last-heartbeat;
     in-out property <string> prompt;
     in-out property <string> negative-prompt;
-    in-out property <string> seed-str;
+    in-out property <float> seed;
     in-out property <float> guidance;
     in-out property <float> delta;
     in-out property <float> maxfps;
@@ -201,7 +205,7 @@ export component MainWindow inherits Window {
     callback pause();
     callback stop();
     callback unload();
-    callback apply-prompts(string, string);
+    callback text-changed(string, string);
     callback param-changed(string, float);
     callback apply-input(string);
     callback toggle-fullscreen();
@@ -225,8 +229,8 @@ export component MainWindow inherits Window {
                 padding: 8px;
                 ConnectionStatus { status: status; host: host; server-port: server-port; local-port: local-port; fps: fps; frames: frames; output-name: output-name; confirmed-input: confirmed-input; last-heartbeat: last-heartbeat; }
                 TransportControls { play => { play(); } pause => { pause(); } stop => { confirm-kind = "stop"; } unload => { confirm-kind = "unload"; } }
-                PromptControls { prompt-txt: prompt; negative-txt: negative-prompt; apply-prompts(pp,np) => { apply-prompts(pp,np); } }
-                ParamControls { seed-str <=> seed-str; guidance <=> guidance; delta <=> delta; maxfps <=> maxfps; steps <=> steps; adjust(k,v) => { param-changed(k, v); } }
+                PromptControls { prompt-txt <=> prompt; negative-txt <=> negative-prompt; edit-text(k,v) => { text-changed(k, v); } }
+                ParamControls { seed <=> seed; guidance <=> guidance; delta <=> delta; maxfps <=> maxfps; steps <=> steps; adjust(k,v) => { param-changed(k, v); } }
                 InputControl { input-str: input-text; confirmed-input: confirmed-input; apply-input(it) => { apply-input(it); } }
                 Diagnostics { errors: errors; sent-log: sent-log; }
             }

@@ -1,7 +1,7 @@
 slint::include_modules!();
 
 use crate::app_state::{AppState, ConnState};
-use crate::commands::{Command, ParamKind};
+use crate::commands::{Command, ParamKind, TextKind};
 use crate::config::{load_config, save_config, Config};
 use crate::diagnostics::Diagnostics;
 use crate::osc::client::OscClient;
@@ -34,6 +34,7 @@ const STALE_AFTER_SECS: i64 = 3;
 const PARAM_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Default slider positions, chosen to match the server's config defaults.
+const DEFAULT_SEED: f32 = -1.0;
 const DEFAULT_GUIDANCE: f32 = 1.0;
 const DEFAULT_DELTA: f32 = 1.0;
 const DEFAULT_MAXFPS: f32 = 4.0;
@@ -53,6 +54,8 @@ fn main() -> anyhow::Result<()> {
     let diag = Rc::new(RefCell::new(Diagnostics::default()));
     let fullscreen = Arc::new(AtomicBool::new(cfg.fullscreen));
     let pending: Rc<RefCell<HashMap<ParamKind, (f64, Instant)>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let pending_text: Rc<RefCell<HashMap<TextKind, (String, Instant)>>> =
         Rc::new(RefCell::new(HashMap::new()));
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -109,6 +112,7 @@ fn main() -> anyhow::Result<()> {
     let diag_t = diag.clone();
     let fs_t = fullscreen.clone();
     let pending_t = pending.clone();
+    let pending_text_t = pending_text.clone();
     let client = Rc::new(client);
     let client_t = client.clone();
 
@@ -119,7 +123,7 @@ fn main() -> anyhow::Result<()> {
         };
 
         while let Ok(cmd) = cmd_rx.try_recv() {
-            handle_command(&client_t, &state_t, &pending_t, cmd);
+            handle_command(&client_t, &state_t, &pending_t, &pending_text_t, cmd);
         }
         while let Ok(ev) = osc_rx.try_recv() {
             handle_event(&state_t, &diag_t, ev);
@@ -129,6 +133,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         flush_pending_params(&client_t, &state_t, &pending_t);
+        flush_pending_text(&client_t, &state_t, &pending_text_t);
 
         update_ui(&window, &state_t, &diag_t, &fs_t);
     });
@@ -154,7 +159,7 @@ fn init_window(window: &MainWindow, cfg: &Config, state: &AppState) {
     window.set_status("Disconnected".into());
     window.set_prompt(state.prompt.clone().into());
     window.set_negative_prompt(state.negative_prompt.clone().into());
-    window.set_seed_str(state.seed.to_string().into());
+    window.set_seed(DEFAULT_SEED);
     window.set_guidance(DEFAULT_GUIDANCE);
     window.set_delta(DEFAULT_DELTA);
     window.set_maxfps(DEFAULT_MAXFPS);
@@ -173,6 +178,7 @@ fn handle_command(
     client: &OscClient,
     state: &Rc<RefCell<AppState>>,
     pending: &Rc<RefCell<HashMap<ParamKind, (f64, Instant)>>>,
+    pending_text: &Rc<RefCell<HashMap<TextKind, (String, Instant)>>>,
     cmd: Command,
 ) {
     tracing::debug!(?cmd, "dispatching command");
@@ -181,13 +187,6 @@ fn handle_command(
         Command::Pause => client.send(protocol::encode_pause()),
         Command::Stop => client.send(protocol::encode_stop()),
         Command::Unload => client.send(protocol::encode_unload()),
-        Command::ApplyPrompts { prompt, negative } => {
-            let mut s = state.borrow_mut();
-            s.prompt = prompt.clone();
-            s.negative_prompt = negative.clone();
-            client.send(protocol::encode_prompt(&prompt));
-            client.send(protocol::encode_negative(&negative));
-        }
         Command::ApplyInput { name } => {
             state.borrow_mut().input_text = name.clone();
             client.send(protocol::encode_input(&name));
@@ -196,6 +195,12 @@ fn handle_command(
             // Only remember the latest value; the timer sends it once the user
             // stops moving the control.
             pending.borrow_mut().insert(kind, (value, Instant::now()));
+        }
+        Command::SetText { kind, value } => {
+            // Prompts are sent once the user pauses typing.
+            pending_text
+                .borrow_mut()
+                .insert(kind, (value, Instant::now()));
         }
     }
 }
@@ -211,22 +216,50 @@ fn flush_pending_params(
     }
 }
 
-/// Remove and return the parameters whose last change is older than `debounce`.
-fn take_due(
-    pending: &Rc<RefCell<HashMap<ParamKind, (f64, Instant)>>>,
+/// Send any prompt/negative text whose debounce window has elapsed.
+fn flush_pending_text(
+    client: &OscClient,
+    state: &Rc<RefCell<AppState>>,
+    pending_text: &Rc<RefCell<HashMap<TextKind, (String, Instant)>>>,
+) {
+    for (kind, value) in take_due(pending_text, Instant::now(), PARAM_DEBOUNCE) {
+        send_text(client, state, kind, value);
+    }
+}
+
+/// Remove and return the entries whose last change is older than `debounce`.
+fn take_due<K, V>(
+    pending: &Rc<RefCell<HashMap<K, (V, Instant)>>>,
     now: Instant,
     debounce: Duration,
-) -> Vec<(ParamKind, f64)> {
+) -> Vec<(K, V)>
+where
+    K: Copy + Eq + std::hash::Hash,
+    V: Clone,
+{
     let mut pending = pending.borrow_mut();
-    let due: Vec<(ParamKind, f64)> = pending
+    let due: Vec<(K, V)> = pending
         .iter()
         .filter(|(_, (_, t))| now.duration_since(*t) >= debounce)
-        .map(|(k, (v, _))| (*k, *v))
+        .map(|(k, (v, _))| (*k, v.clone()))
         .collect();
     for (kind, _) in &due {
         pending.remove(kind);
     }
     due
+}
+
+fn send_text(client: &OscClient, state: &Rc<RefCell<AppState>>, kind: TextKind, value: String) {
+    match kind {
+        TextKind::Prompt => {
+            state.borrow_mut().prompt = value.clone();
+            client.send(protocol::encode_prompt(&value));
+        }
+        TextKind::Negative => {
+            state.borrow_mut().negative_prompt = value.clone();
+            client.send(protocol::encode_negative(&value));
+        }
+    }
 }
 
 fn send_param(client: &OscClient, state: &Rc<RefCell<AppState>>, kind: ParamKind, value: f64) {
@@ -358,10 +391,18 @@ fn setup_callbacks(window: &MainWindow, tx: mpsc::Sender<Command>, fullscreen: A
         let _ = tx_c.send(Command::Unload);
     });
     let tx_c = tx.clone();
-    window.on_apply_prompts(move |p, n| {
-        let _ = tx_c.send(Command::ApplyPrompts {
-            prompt: p.to_string(),
-            negative: n.to_string(),
+    window.on_text_changed(move |kind, value| {
+        let kind = match kind.as_str() {
+            "prompt" => TextKind::Prompt,
+            "negative" => TextKind::Negative,
+            other => {
+                tracing::warn!(kind = %other, "unknown text field from UI");
+                return;
+            }
+        };
+        let _ = tx_c.send(Command::SetText {
+            kind,
+            value: value.to_string(),
         });
     });
     let tx_c = tx.clone();
@@ -475,6 +516,62 @@ mod tests {
         // State reflects the (desired) value that was just sent.
         assert!((state.borrow().guidance - 2.5).abs() < 1e-6);
         // Nothing left pending.
+        assert!(pending.borrow().is_empty());
+    }
+
+    #[test]
+    fn take_due_keeps_latest_prompt_text() {
+        let now = Instant::now();
+        let pending = Rc::new(RefCell::new(HashMap::new()));
+        pending.borrow_mut().insert(
+            TextKind::Prompt,
+            ("a ca".to_string(), now - Duration::from_secs(1)),
+        );
+        pending
+            .borrow_mut()
+            .insert(TextKind::Prompt, ("a cat".to_string(), now));
+
+        let due = take_due(&pending, now, Duration::from_millis(300));
+        assert!(due.is_empty(), "still typing, nothing should be sent yet");
+        assert_eq!(pending.borrow().get(&TextKind::Prompt).unwrap().0, "a cat");
+    }
+
+    #[test]
+    fn flush_sends_debounced_prompt_over_udp() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let target = server.local_addr().unwrap();
+
+        let client_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let (log_tx, _log_rx) = mpsc::channel();
+        let client = OscClient::new(client_sock, target, log_tx);
+
+        let state = Rc::new(RefCell::new(AppState::default()));
+        let pending = Rc::new(RefCell::new(HashMap::new()));
+        pending.borrow_mut().insert(
+            TextKind::Negative,
+            (
+                "blurry".to_string(),
+                Instant::now() - Duration::from_millis(400),
+            ),
+        );
+
+        flush_pending_text(&client, &state, &pending);
+
+        let mut buf = [0u8; 1024];
+        let (n, _) = server.recv_from(&mut buf).unwrap();
+        let (_, packet) = rosc::decoder::decode_udp(&buf[..n]).unwrap();
+        match packet {
+            rosc::OscPacket::Message(m) => {
+                assert_eq!(m.addr, "/negative");
+                assert_eq!(m.args, vec![rosc::OscType::String("blurry".to_string())]);
+            }
+            other => panic!("expected a message, got {other:?}"),
+        }
+
+        assert_eq!(state.borrow().negative_prompt, "blurry");
         assert!(pending.borrow().is_empty());
     }
 }
